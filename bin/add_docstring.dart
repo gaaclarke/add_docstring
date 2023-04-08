@@ -12,12 +12,25 @@ import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as path;
 
-/// Prints the usage instructions for the add_docstring command.
+/// Prints the usage information for the `add_docstring` command-line tool,
+/// which takes two arguments:
+/// - The [openaiApiKey], which is the OpenAI API key to use for generating
+///   docstrings.
+/// - The [dartFilePath], which is the path to the Dart file that needs
+///   docstrings to be added.
 void _printUsage() {
   print('add_docstring <openai api key> <path to dart file>');
 }
 
-/// Processes the input path by analyzing the files within it and returns a list of Procedures.
+/// Processes the Dart file located at [inputPath] and returns a list of
+/// [Procedure] objects.
+///
+/// The function first creates a list of included paths containing only the
+/// absolute and normalized [inputPath]. It then creates an
+/// [AnalysisContextCollection] with the included paths and iterates over each
+/// context. For each context, it iterates over each analyzed file in the
+/// context's root directory. If the path of the analyzed file matches the
+/// [inputPath], it gets the parsed
 List<Procedure> _process(String inputPath) {
   final List<String> includedPaths = <String>[
     path.absolute(path.normalize(inputPath))
@@ -41,8 +54,18 @@ List<Procedure> _process(String inputPath) {
 class ProcedureVisitor extends RecursiveAstVisitor<void> {
   final List<Procedure> procedures = [];
 
-  /// Adds a procedure to the list of procedures with the given [nameToken],
-  /// [returnType], [metadata], and [endToken].
+  /// Adds a procedure with the given [nameToken], [returnType], [metadata], and
+  /// [endToken] to the list of procedures.
+  ///
+  /// The [nameToken] represents the name of the procedure.
+  ///
+  /// The [returnType] represents the return type of the procedure.
+  ///
+  /// The [metadata] represents the annotations associated with the procedure.
+  ///
+  /// The [endToken] represents the end of the procedure.
+  ///
+  /// Throws an
   void _addProcedure(Token nameToken, TypeAnnotation? returnType,
       NodeList<Annotation> metadata, Token endToken) {
     final String name = nameToken.lexeme;
@@ -54,13 +77,18 @@ class ProcedureVisitor extends RecursiveAstVisitor<void> {
     procedures.add(Procedure(name, range));
   }
 
-  /// Visits a [FunctionDeclaration] node and adds a procedure with the given name, return type, metadata, and end token.
+  /// Visits a [FunctionDeclaration] node and adds a procedure with the given
+  /// [name], [returnType], [metadata], and [endToken].
   @override
   void visitFunctionDeclaration(FunctionDeclaration node) {
     _addProcedure(node.name, node.returnType, node.metadata, node.endToken);
   }
 
-  /// Adds a procedure with the given [name], [returnType], [metadata], and [endToken] to the list of procedures.
+  /// Visits a [MethodDeclaration] node and adds a procedure to the list of
+  /// procedures with the provided [name], [returnType], [metadata], and
+  /// [endToken] information.
+  ///
+  /// Overrides the [visitMethodDeclaration] method in the base class.
   @override
   void visitMethodDeclaration(MethodDeclaration node) {
     _addProcedure(node.name, node.returnType, node.metadata, node.endToken);
@@ -72,7 +100,12 @@ class Range {
   final int begin;
   final int end;
 
-  /// Returns a string representation of the object, consisting of the beginning and ending values.
+  /// Returns a string representation of the object.
+  ///
+  /// The returned string is a human-readable representation of this object, and
+  /// is primarily intended for debugging and logging purposes. The string
+  /// representation includes the values of the begin and end properties
+  /// enclosed in parentheses.
   @override
   String toString() {
     return '($begin, $end)';
@@ -85,24 +118,45 @@ class Procedure {
   final Range range;
 }
 
-/// Generates a docstring for the specified dart function, [name], using OpenAI's API. The [procedure] parameter contains the code of the function.
+/// Generates a docstring for a given function [procedure] using OpenAI's GPT-3
+/// model. The generated docstring will describe the purpose of the function and
+/// its parameters. The [name] parameter is used for logging purposes. The
+/// function requires an [openaiApiKey] to be passed in as a string.
 Future<String> _generateDocstring(
     String openaiApiKey, String name, String procedure) async {
   print('looking up $name');
-  String prompt =
-      '''Generate a docstring for the following dart function, $name.
-Follow this format:
-/// Calculates the division between [x] and [y] where [x] is the numerator and
-/// [y] is the denominator.
+  final List messages = [
+    {
+      'role': 'system',
+      'content':
+          'You are an expert at programming Dart, who only responds with clear docstrings for provided functions.'
+    },
+    {
+      'role': 'user',
+      'content': '''Add a docstring to this function
+--
+double div(double x, double y) => x / y;
+'''
+    },
+    {
+      'role': 'assistant',
+      'content':
+          '/// Calculates the division between [x] and [y] where [x] is the numerator and [y] is the denominator.'
+    },
+    {
+      'role': 'user',
+      'content': '''Add a docstring to this function
 --
 $procedure
-''';
-  final String model = 'text-davinci-003';
+'''
+    },
+  ];
+  final String model = 'gpt-3.5-turbo';
   final int maxTokens = 100;
   final double temperature = 0.5;
 
   Map<String, dynamic> requestBody = {
-    'prompt': prompt,
+    'messages': messages,
     'model': model,
     'max_tokens': maxTokens,
     'temperature': temperature,
@@ -111,7 +165,7 @@ $procedure
   Completer<String> result = Completer<String>();
   http
       .post(
-    Uri.parse('https://api.openai.com/v1/completions'),
+    Uri.parse('https://api.openai.com/v1/chat/completions'),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $openaiApiKey',
@@ -124,8 +178,10 @@ $procedure
           jsonDecode(response.body) as Map<String, Object?>;
       final List<Object?> choices = (decoded["choices"] as List<Object?>?)!;
       final Map<String, Object?> first = (choices[0] as Map<String, Object?>?)!;
-      final String docstring = (first["text"] as String?)!;
-      result.complete(docstring);
+      final Map<String, Object?> message =
+          (first['message'] as Map<String, Object?>?)!;
+      final String content = (message['content'] as String?)!;
+      result.complete(content);
     } else {
       result.completeError(Exception(
           'Request failed with status: ${response.statusCode} ${response.body}'));
@@ -137,7 +193,13 @@ $procedure
   return await result.future;
 }
 
-/// Calculates the division between the given source code and OpenAI's servers. Takes two arguments, the API key and the input path, to generate a docstring for the procedures in the source code.
+/// Entry point of the program that generates docstrings for functions in a Dart
+/// file. Expects two arguments: an OpenAI API key and the path to the Dart file
+/// to be processed. If the number of arguments is incorrect, it prints the
+/// usage instructions. If the user confirms the submission, it reads the
+/// contents of the input file and generates docstrings for each function found.
+/// The output is written to a new file named 'output.dart' in the same
+/// directory as the input
 void main(List<String> arguments) async {
   if (arguments.length != 2) {
     _printUsage();
